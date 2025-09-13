@@ -1,0 +1,2 @@
+gemini|gemini -m gemini-2.5-pro "$PROMPT"
+qwen|qwen -m qwen3-coder-plus -p "$PROMPT"
