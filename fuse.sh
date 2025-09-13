@@ -76,7 +76,7 @@ PROMPT_INPUT="${1:-}"
 
 [ -f "$CONFIG" ] || { echo "Error: config file not found: $CONFIG"; exit 1; }
 
-SCRATCH="")(mktemp -d 2>/dev/null || mktemp -d -t fuse)"
+SCRATCH="$(mktemp -d 2>/dev/null || mktemp -d -t fuse)"
 cleanup() { rm -rf "$SCRATCH" 2>/dev/null || true; }
 trap cleanup EXIT
 
@@ -123,8 +123,8 @@ PROVIDERS=()
 COMMANDS=()
 while IFS= read -r line || [ -n "$line" ]; do
   [ -z "${line// }" ] && continue
-  case "$line" in #*) continue;; esac
-  IFS='|' read -r name cmd <<<"$line"
+  [[ "$line" =~ ^# ]] && continue
+  echo "$line" | IFS='|' read -r name cmd
   if [ -n "${name:-}" ] && [ -n "${cmd:-}" ]; then
     PROVIDERS+=("$name")
     COMMANDS+=("$cmd")
