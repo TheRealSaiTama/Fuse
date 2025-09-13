@@ -16,25 +16,57 @@ COLOR_MODE="auto"
 usage() {
   cat <<EOF
 FUSE v$VERSION — Parallel Multi-Model Judge & Merge
-Usage: $0 [-c providers.txt] [-m raw|consensus|judgeonly] [-t timeout] [-j judge_name] [-x max_chars] [-w words] [-C] [-md] "your prompt"
+Usage: $0 [-c providers.txt] [-m raw|consensus|judgeonly] [-t timeout] [-j judge_name] [-x max_chars] [-w words] [-C] "your prompt"
+  -c file       Providers config (default: providers.txt)
+  -m mode       raw | consensus | judgeonly  (default: consensus)
   -t timeout    Per-provider timeout in seconds (0 = no timeout)
+  -j judge      Force judge provider name
   -x max_chars  Max chars per candidate included in judge prompt (default: $MAX_CHARS)
   -w words      Hard-cap judge output to N words (0 = unlimited)
   -C            Disable colored output (same as NO_COLOR=1)
+  -h            Help
+
+Environment variables (optional):
+  NVM_DIR                Override nvm directory (default: $HOME/.nvm)
+  FUSE_NODE_VERSION      If set, attempt 'nvm use <version>' (e.g. 20, v20.11.1, lts/*)
+  FUSE_SKIP_NODE_SETUP   If '1', skip any nvm/node detection
 EOF
+}
+
+# Portable Node environment loader (replaces hardcoded path)
+load_node_env() {
+  if [ "${FUSE_SKIP_NODE_SETUP:-0}" = "1" ]; then
+    return
+  fi
+
+  local nvm_dir="${NVM_DIR:-$HOME/.nvm}"
+  if [ -s "$nvm_dir/nvm.sh" ]; then
+    # shellcheck source=/dev/null
+    . "$nvm_dir/nvm.sh" || {
+      echo "[FUSE] Warning: Failed sourcing nvm at $nvm_dir/nvm.sh" >&2
+      return
+    }
+    if [ -n "${FUSE_NODE_VERSION:-}" ]; then
+      if ! nvm use "${FUSE_NODE_VERSION}" >/dev/null 2>&1; then
+        echo "[FUSE] Warning: nvm use ${FUSE_NODE_VERSION} failed; continuing with default node ($(command -v node || echo 'none'))" >&2
+      fi
+    fi
+  else
+    :
+  fi
 }
 
 while getopts ":c:m:t:j:x:w:Cdh" opt; do
   case $opt in
-    c) CONFIG="$OPTARG" ;;
-    m) MODE="$OPTARG" ;;
-    t) TIMEOUT="$OPTARG" ;;
-    j) JUDGE="$OPTARG" ;;
-    x) MAX_CHARS="$OPTARG" ;;
-    w) OUTPUT_WORD_CAP="$OPTARG" ;;
-    C) COLOR_MODE="never" ;;
-    h) usage; exit 0 ;;
-    \?) echo "Unknown option -$OPTARG" >&2; usage; exit 1 ;;
+    c) CONFIG="$OPTARG" ;; 
+    m) MODE="$OPTARG" ;; 
+    t) TIMEOUT="$OPTARG" ;; 
+    j) JUDGE="$OPTARG" ;; 
+    x) MAX_CHARS="$OPTARG" ;; 
+    w) OUTPUT_WORD_CAP="$OPTARG" ;; 
+    C) COLOR_MODE="never" ;; 
+    h) usage; exit 0 ;; 
+    \?) echo "Unknown option -$OPTARG" >&2; usage; exit 1 ;; 
   esac
 done
 shift $((OPTIND -1))
@@ -44,7 +76,7 @@ PROMPT_INPUT="${1:-}"
 
 [ -f "$CONFIG" ] || { echo "Error: config file not found: $CONFIG"; exit 1; }
 
-SCRATCH="$(mktemp -d 2>/dev/null || mktemp -d -t fuse)"
+SCRATCH="")(mktemp -d 2>/dev/null || mktemp -d -t fuse)"
 cleanup() { rm -rf "$SCRATCH" 2>/dev/null || true; }
 trap cleanup EXIT
 
@@ -92,17 +124,18 @@ COMMANDS=()
 while IFS= read -r line || [ -n "$line" ]; do
   [ -z "${line// }" ] && continue
   case "$line" in #*) continue;; esac
-  IFS=\'|\' read -r name cmd <<<"$line"
+  IFS='|' read -r name cmd <<<"$line"
   if [ -n "${name:-}" ] && [ -n "${cmd:-}" ]; then
     PROVIDERS+=("$name")
     COMMANDS+=("$cmd")
   fi
 done < "$CONFIG"
 
-[ "${#PROVIDERS[@]}" -gt 0 ] || { echo "No valid providers in $CONFIG. Format: name|command_with_\$PROMPT" >&2; exit 1; }
+[ "
+${#PROVIDERS[@]}" -gt 0 ] || { echo "No valid providers in $CONFIG. Format: name|command_with_$PROMPT" >&2; exit 1; }
 
 printf "FUSE — Parallel Multi-Model Judge & Merge\n"
-printf "Providers: %s\n" "$(IFS=\\'\\\', \\\' ; echo "${PROVIDERS[*]}")"
+printf "Providers: %s\n" "$(IFS=, ; echo "${PROVIDERS[*]}")"
 printf "─────────────────────────────────────────\n"
 
 use_colors=false
@@ -137,8 +170,7 @@ for name in "${PROVIDERS[@]}"; do
   ERRFILES+=("$errfile")
 
   (
-    source "/home/therealsaitama/.nvm/nvm.sh"
-    nvm use v20.19.4
+    load_node_env
 
     echo "Subshell PATH: $PATH" >> "$errfile"
     echo "Node check: $(command -v node || echo 'node MIA')" >> "$errfile"
@@ -176,7 +208,7 @@ for idx in "${!PIDS[@]}"; do
   if wait "$pid"; then
     read rc s e < "$SCRATCH/${name}.meta"
     dur=$((e - s))
-    [ "$dur" -lt "$FASTEST_TIME" ] && { FASTEST_TIME=$dur; FASTEST_NAME="$name"; }
+    [ "$dur" -lt "$FASTEST_TIME" ] && { FASTEST_TIME="$dur"; FASTEST_NAME="$name"; }
     wc_out=$(wc -w < "${OUTFILES[$idx]}" 2>/dev/null || echo 0)
     TIMES[$idx]="$dur"
     WORDS[$idx]="$wc_out"
@@ -248,7 +280,9 @@ for idx in "${!PROVIDERS[@]}"; do
 done
 if [ "$JUDGE_IDX" -lt 0 ]; then
   for idx in "${!PROVIDERS[@]}"; do
-    if [ "${STATUSES[$idx]}" = "ok" ]; then JUDGE_IDX="$idx"; JUDGE="${PROVIDERS[$idx]}"; break; fi
+    if [ "${STATUSES[$idx]}" = "ok" ]; then
+      JUDGE_IDX="$idx"; JUDGE="${PROVIDERS[$idx]}"; break; fi
+    fi
   done
 fi
 
@@ -312,9 +346,8 @@ fi
 
 run_provider() {
   local idx=$1
-  local prompt="$2"
-  source "/home/therealsaitama/.nvm/nvm.sh"
-  nvm use v20.19.4
+  local prompt=$2
+  load_node_env
   PROMPT="$prompt" bash -c "${COMMANDS[$idx]}" 2>&1
 }
 
@@ -343,7 +376,7 @@ postprocess_and_print() {
 }
 
 if ! JUDGE_OUT=$(run_provider "$JUDGE_IDX" "$PROMPT"); then
-  echo "(Judge \'$JUDGE\' failed)." >&2
+  echo "(Judge '$JUDGE' failed)." >&2
   [ -n "$JUDGE_OUT" ] && { echo "Judge error/output:" >&2; printf "%s\n" "$JUDGE_OUT" | sed -n '1,120p' >&2; }
 
   FALLBACK_IDXES=()
@@ -351,14 +384,14 @@ if ! JUDGE_OUT=$(run_provider "$JUDGE_IDX" "$PROMPT"); then
     set -- $line
     [ "$2" = "$JUDGE_IDX" ] && continue
     FALLBACK_IDXES+=("$2")
-  done < <( \
+  done < <(
     {
       for idx in "${!PROVIDERS[@]}"; do
         if [ "${STATUSES[$idx]}" = "ok" ]; then
           echo "${TIMES[$idx]} $idx"
         fi
       done
-    } | sort -n -k1,1 \
+    } | sort -n -k1,1
   )
 
   for fb_idx in "${FALLBACK_IDXES[@]}"; do
@@ -368,7 +401,7 @@ if ! JUDGE_OUT=$(run_provider "$JUDGE_IDX" "$PROMPT"); then
       postprocess_and_print "$JUDGE_OUT"
       exit 0
     else
-      [ -n "$JUDGE_OUT" ] && { echo "Fallback judge \'$fb_name\' failed:" >&2; printf "%s\n" "$JUDGE_OUT" | sed -n '1,120p' >&2; }
+      [ -n "$JUDGE_OUT" ] && { echo "Fallback judge '$fb_name' failed:" >&2; printf "%s\n" "$JUDGE_OUT" | sed -n '1,120p' >&2; }
     fi
   done
 
@@ -387,3 +420,5 @@ if ! JUDGE_OUT=$(run_provider "$JUDGE_IDX" "$PROMPT"); then
 fi
 
 postprocess_and_print "$JUDGE_OUT"
+
+# End of file
